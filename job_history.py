@@ -33,7 +33,7 @@ def parse_jobid_from_filename(f):
         return None
     m = JobIDInFileNameRegex.search(f)
     if m:
-        return m.group(0)[1:-1]
+        return m.group(0)[0:-1]
     return None
 
 def parse_jobid_from_filename2(f):
@@ -70,7 +70,14 @@ class BriefReportVistor(object):
         self.end_date = end_date
         self.scanOnly = scanOnly
     def accept(self, dt):
-        return (self.start_date and dt >= self.start_date) and (self.end_date and dt < self.end_date)
+        if (self.start_date == None and self.end_date == None):
+		return True;
+	elif (self.start_date == None):
+		return dt <= self.end_date;
+        elif (self.end_date == None):
+		return dt >= self.start_date;
+        else:
+		return (self.start_date and dt >= self.start_date) and (self.end_date and dt < self.end_date)
     def onColumns(self, columns):
         pass
     def onStats(self, stats):
@@ -80,12 +87,16 @@ class BriefReportVistor(object):
     def onEnd(self):
         pass
 
-def get_job_date(jobfile):
+def get_job_date(jobfile, offset=0):
     try:
         f = open(jobfile, "r")
         job = parse_history(f, True)
         f.close()
-        return time.strftime('%Y-%m-%d', time.localtime(job['submit_time']))
+        current=time.localtime(job['submit_time'])
+        seconds=time.mktime(current);
+        seconds=seconds + offset*3600*24
+        current=time.localtime(seconds);
+        return time.strftime('%Y-%m-%d', current)
     except:
         print "wrong job file: %s" % jobfile
         raise
@@ -122,9 +133,11 @@ class HistoryRepo(Record):
                         self.days[datestr] = day
                     jh = day.jobs.get(jobid)
                     if jh == None:
-                        jh = JobHistory(jobid, os.path.join(root, f))
+			print("Scanning job: " + str(jobid))
+			jh = JobHistory(jobid, os.path.join(root, f))
                         day.jobs[jobid] = jh
                     counter += 1
+            print("We have found " + str(counter) + " Jobs in the history folder");
             self.status = "IDLE"
             self.last_scan = time.time()
             return True
@@ -143,6 +156,7 @@ class HistoryRepo(Record):
                     d = day.jobs[jobid].get_date()
                     if ((not start_date) or d >= start_date) and ((not end_date) or d < end_date):
                         bi = day.jobs[jobid].get_brief_info()
+			print("Adding job id: " + jobid)
                         data.append(bi)
             else:
                 if ((not start_date) or k >= start_date) and ((not end_date) or k < end_date):
@@ -179,6 +193,7 @@ class HistoryRepo(Record):
         if visitor.scanOnly:
             return
         visitor.onColumns(JobBriefInfoProperties)
+        counter=0;
         for k in sorted(repo.days.iterkeys()):
             if k == 'default':
                 day = repo.days[k]
@@ -187,28 +202,38 @@ class HistoryRepo(Record):
                     d = day.jobs[jobid].get_date()
                     if ((not start_date) or d >= start_date) and ((not end_date) or d < end_date):
                         bi = day.jobs[jobid].get_brief_info()
+			print ("Adding job id: " + str(jobid));
+                        counter = counter+1;
                         visitor.onRecord(bi)
             else:
                 if ((not start_date) or k >= start_date) and ((not end_date) or k < end_date):
                     for r in repo.days[k].get_brief_info_table()['data']:
+                        print("Adding job id: " + str(r[2]));
+			counter = counter+1;
                         visitor.onRecord(r)
+        print("We have totally added " + str(counter) + " jobs into the report");
         visitor.onEnd()
     @staticmethod
     def process_brief_report_flat(repopath, visitor):
+	print repopath
         # dealing with a monster directory with ~millions of log files
         # using binary search to locate logs in date range 
         start_date = visitor.start_date
         end_date = visitor.end_date
+	print start_date
+	print end_date
         files = os.listdir(repopath)
         logs = []
         if repopath[-1] != '/':
             repopath = repopath + '/'
         for f in files:
+	    print "File" + f
             jobid = parse_jobid_from_filename2(f)
             if not jobid:
                 continue
             if os.stat(repopath+f).st_size < 100:
                 continue
+
             logs.append((jobid, f))
         logs.sort()
         lo = 0
@@ -234,11 +259,12 @@ class HistoryRepo(Record):
                     lo = mid+1
             end_idx = lo
         mindate = start_date
+
         if start_idx < len(logs) and start_idx>=0:
             mindate = get_job_date(repopath + logs[start_idx][1])
         maxdate = start_date
         if (end_idx-1) < len(logs) and (end_idx-1)>=0:
-            maxdate = get_job_date(repopath + logs[end_idx-1][1])
+            maxdate = get_job_date(repopath + logs[end_idx-1][1], 1)
         total = end_idx - start_idx
         print "Get date range (%s:%s - %s:%s)" % ('None' if start_idx==len(logs) else logs[start_idx][0], 
                                                   'None' if start_idx==len(logs) else logs[start_idx][1],
@@ -253,6 +279,7 @@ class HistoryRepo(Record):
             job = None
             try:
                 job = parse_history(f, False)
+                print "Successully parse " + str(f)
             except Exception as e:
                 print "Exception %s when parse %s" % (str(e), logpair[1])
             f.close()
@@ -455,6 +482,7 @@ class JsonReportVisitor(BriefReportVistor):
     def __init__(self, path, start_date, end_date, scanOnly):
         BriefReportVistor.__init__(self, start_date, end_date, scanOnly)
         self.path = path
+        print "output to: " + str(self.path)
         self.fout = None
         self.first = True
     def onColumns(self, columns):
@@ -476,6 +504,8 @@ class CsvReportVisitor(BriefReportVistor):
         BriefReportVistor.__init__(self, start_date, end_date, scanOnly)
         self.path = path
         self.fout = None
+        print "output to : " + str(self.path)
+
     def onColumns(self, columns):
         if self.fout == None:
             self.fout = open(self.path, 'w')
@@ -600,6 +630,10 @@ if __name__ == "__main__":
             parser.error("invaild argument period")
     repo_path = args[0]
     # update progress every 4 sec
+    start=options.startDate
+    end=options.endDate
+
+
     prv = ProgressReportVisitor(options.type, options.output, period, options.startDate, options.endDate, options.dryRun, 4.0);
     if options.flat:
         HistoryRepo.process_brief_report_flat(repo_path, prv)
